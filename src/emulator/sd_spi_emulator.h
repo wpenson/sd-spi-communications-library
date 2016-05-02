@@ -1,15 +1,14 @@
 /******************************************************************************/
 /**
-@file		sd_spi.h
+@file		sd_spi_emulator.h
 @author     Wade H. Penson
 @date		June, 2015
-@brief      SD RAW library header.
-@details	This library supports MMC, SD1, SD2, and SDHC/SDXC type cards.
+@brief      SD SPI emulated library header.
+@details	This library emulates read from and writing to an SD card.
 			By defining SD_BUFFER, the library also implements a 512 byte buffer
-			for reading and writing. The library currently uses the
-			SPI library built into the Arduino core for SPI communication.
+			for reading and writing.
 
-@copyright  Copyright 2015 Wade Penson
+@copyright  Copyright 2015 Lawrence, Fazackerley, Douglas, Huang, Penson.
 
 @license    Licensed under the Apache License, Version 2.0 (the "License");
             you may not use this file except in compliance with the License.
@@ -22,25 +21,6 @@
             WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or 
             implied. See the License for the specific language governing
             permissions and limitations under the License.
-
-@todo 		Support for AVR and SAMX AVR without using the Arduino SPI library.
-@todo 		Support for using Software SPI (bit banging).
-@todo 		Use CMD6 during initialization to switch card to high speed mode if
-			it supports it. This will be helpful for the due since the SPI
-			speed can be up to 84MHz.
-@todo 		Allow setting CS high when card is in busy state for operations
-			instead of waiting. However, if an error is thrown for the
-			operation, the host will get that error on the next command it
-			sends.
-@todo 		Send_status should be sent after all busy signals
-			(look at ch 4.3.7).
-@todo 		Send stop_transmission if there was an error during
-			write continuous (and read continuous??).
-@todo 		Get the number of well written blocks for sequential writing just in
-			case if there was an error.
-@todo 		Card reads take up to 100ms and writes take up to 500ms. Make
-			timeouts reflect this.
-@todo 		Reduce the number of error codes.
 */
 /******************************************************************************/
 
@@ -51,11 +31,13 @@
 extern "C" {
 #endif
 
-#define SD_SPI_BUFFER
-
+#include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#include "sd_spi_info.h"
+#include "./../sd_spi_info.h"
+
+#define SD_SPI_BUFFER
+#define SD_NUMBER_OF_BLOCKS (1 << 16)
 
 /** State variables used by the SD raw library. */
 typedef struct sd_spi_card {
@@ -74,6 +56,9 @@ typedef struct sd_spi_card {
 	/** If the card is being read or written to continually, this keeps track
 		of the block being read or written to. */
 	uint32_t continuous_block_address;
+
+	/* Pointer for the file used to emulate the card. */
+	FILE *fp;
 
 #ifdef SD_SPI_BUFFER
 	/** Buffer for SD blocks. */
@@ -499,6 +484,16 @@ sd_spi_read_csd_register(
 */
 int8_t
 sd_spi_card_status(
+	void
+);
+
+/**
+@brief		Getter for the address of the block that is currently buffered.
+
+@return		Current buffered block address.
+*/
+uint32_t
+sd_spi_current_buffered_block(
 	void
 );
 

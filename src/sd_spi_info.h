@@ -23,10 +23,10 @@
 */
 /******************************************************************************/
 
-#ifndef SD_SPI_INFO_H_
+#if !defined(SD_SPI_INFO_H_)
 #define SD_SPI_INFO_H_
 
-#ifdef  __cplusplus
+#if defined(__cplusplus)
 extern "C" {
 #endif
 
@@ -194,7 +194,7 @@ typedef struct sd_spi_csd
 	unsigned int:								1;
 } sd_spi_csd_t;
 
-#ifdef  __cplusplus
+#if defined(__cplusplus)
 }
 #endif
 

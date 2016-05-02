@@ -26,7 +26,9 @@
 #endif
 
 #include "sd_spi.h"
-#include "sd_spi_commands.h"
+#include "../sd_spi_commands.h"
+
+uint8_t sd_spi_dirty_write = 0;
 
 /* An sd_spi_card_t structure for internal state. */
 static sd_spi_card_t card;
@@ -168,7 +170,7 @@ sd_spi_unselect_card(
 @brief	Sends a byte over the SPI bus.
 */
 static void
-sd_spi_spi_send(
+sd_spi_send(
 	uint8_t b
 );
 
@@ -176,7 +178,7 @@ sd_spi_spi_send(
 @brief	Receives a byte from the SPI bus.
 */
 static uint8_t
-sd_spi_spi_receive(
+sd_spi_receive(
 	void
 );
 
@@ -185,6 +187,7 @@ sd_spi_init(
 	uint8_t chip_select_pin
 )
 {
+	//sd_spi_dirty_write = 0;
 	card.spi_speed = 0;
 	card.card_type = SD_CARD_TYPE_UNKNOWN;
 	card.chip_select_pin = chip_select_pin;
@@ -192,31 +195,34 @@ sd_spi_init(
 	card.is_read_write_continuous = 0;
 	card.continuous_block_address = 0;
 
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	card.buffered_block_address = 0;
 	card.is_buffer_current = 0;
 	card.is_buffer_written = 1;
-#endif /* SD_SPI_BUFFER */
+#endif
 
-#ifdef USE_HARDWARE_SPI
-
-#else /* USE_HARDWARE_SPI */
+#if defined(USE_HARDWARE_SPI)
+	// TODO: Set CS as output and high.
+	// TODO: Begin transaction for SPI at the slowest speed?
+#else
 	/* Set CS high. */
   	pinMode(chip_select_pin, OUTPUT);
   	digitalWrite(chip_select_pin, HIGH);
 
   	SPI.begin();
 	SPI.beginTransaction(SPISettings(250000, MSBFIRST, SPI_MODE0));
+#endif
 
 	/* Send at least 74 clock pulses to enter the native operating mode
 	   (80 in this case). */
-	uint8_t i;
+	uint16_t i;
   	for (i = 0; i < 10; i++)
   	{
-  		sd_spi_spi_send(0xFF);
+  		sd_spi_send(0xFF);
   	}
-
-  	SPI.endTransaction();
+	
+#if !defined(USE_HARDWARE_SPI)
+	SPI.endTransaction();
 #endif
 
   	/* Record start time to check for initialization timeout. */
@@ -228,7 +234,6 @@ sd_spi_init(
 		if (((uint16_t) millis() - init_start_time) > SD_INIT_TIMEOUT)
 		{
 			sd_spi_unselect_card();
-
 			return SD_ERR_INIT_TIMEOUT;
 		}
   	}
@@ -240,22 +245,20 @@ sd_spi_init(
   		 == 0)
   	{
   		/* Discard first 2 bytes of R7. */
-  		sd_spi_spi_receive();
-  		sd_spi_spi_receive();
+  		sd_spi_receive();
+  		sd_spi_receive();
 
   		/* Check if voltage range is accepted. */
-    	if ((sd_spi_spi_receive() & 0x01) == 0)
+    	if ((sd_spi_receive() & 0x01) == 0)
     	{
     		sd_spi_unselect_card();
-
 			return SD_ERR_OUTSIDE_VOLTAGE_RANGE;
 		}
 
 		/* Check if the test pattern is the same. */
-    	if (sd_spi_spi_receive() != 0xAA)
+    	if (sd_spi_receive() != 0xAA)
     	{
     		sd_spi_unselect_card();
-
       		return SD_ERR_SEND_IF_COND_WRONG_TEST_PATTERN;
     	}
 
@@ -272,7 +275,6 @@ sd_spi_init(
 			if (((uint16_t) millis() - init_start_time) > SD_INIT_TIMEOUT)
 			{
 				sd_spi_unselect_card();
-
 				return SD_ERR_INIT_TIMEOUT;
 			}
 		}
@@ -281,19 +283,18 @@ sd_spi_init(
 		if (sd_spi_send_command(SD_CMD_READ_OCR, 0))
 		{
 			sd_spi_unselect_card();
-
 			return SD_ERR_OCR_REGISTER;
     	}
 
-		if ((sd_spi_spi_receive() & 0x40) != 0)
+		if ((sd_spi_receive() & 0x40) != 0)
 		{
 			card.card_type = SD_CARD_TYPE_SDHC;
 		}
 
 		/* Discard rest of OCR. */
-		sd_spi_spi_receive();
-		sd_spi_spi_receive();
-		sd_spi_spi_receive();
+		sd_spi_receive();
+		sd_spi_receive();
+		sd_spi_receive();
 	}
 	else
 	{
@@ -311,7 +312,6 @@ sd_spi_init(
 						SD_INIT_TIMEOUT + 500)
 					{
 						sd_spi_unselect_card();
-
 						return SD_ERR_UNKNOWN_CARD_TYPE;
 					}
 			  	}
@@ -331,8 +331,12 @@ sd_spi_init(
     if (sd_spi_send_command(SD_CMD_SET_BLOCKLEN, 512))
     {
     	sd_spi_unselect_card();
-
     	return SD_ERR_SETTING_BLOCK_LENGTH;
+    }
+
+    for (i = 0; i < 512; i++)
+    {
+    	card.sd_spi_buffer[i] = 0;
     }
 
 	card.spi_speed = 1;
@@ -355,7 +359,7 @@ sd_spi_write(
 		return SD_ERR_WRITE_OUTSIDE_OF_BLOCK;
 	}
 
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	/* Write a whole block out if it is 512 bytes, otherwise read block into
 	   buffer for partial writing. */
 	if (number_of_bytes == 512 && !card.is_read_write_continuous)
@@ -365,34 +369,38 @@ sd_spi_write(
 
 		return response;
 	}
-	
-	if (!card.is_read_write_continuous && (card.buffered_block_address !=
-		block_address || !card.is_buffer_current))
+	else if (!card.is_read_write_continuous && (card.buffered_block_address !=
+			 block_address || !card.is_buffer_current))
 	{
 		int8_t response;
-
 		if ((response = sd_spi_flush()))
 		{
 			return response;
 		}
 
-		if ((response = sd_spi_read_in_data(block_address, card.sd_spi_buffer,
-											512, 0)))
+		if (sd_spi_dirty_write)
 		{
-			return response;
+			card.buffered_block_address = block_address;
+		}
+		else
+		{
+			if ((response = sd_spi_read_in_data(block_address, card.sd_spi_buffer,
+												512, 0)))
+			{
+				return response;
+			}
 		}
 	}
 
-	card.is_buffer_written = 0;
 	memcpy(card.sd_spi_buffer + byte_offset, data, number_of_bytes);
+	card.is_buffer_written = 0;
 
 	return SD_ERR_OK;
-#else /* SD_SPI_BUFFER */
+#else
 	int8_t response = sd_spi_write_out_data(block_address, data,
 										 	number_of_bytes, byte_offset);
 
 	sd_spi_unselect_card();
-
 	return response;
 #endif
 }
@@ -405,27 +413,27 @@ sd_spi_write_block(
 {
 	int8_t response;
 
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	if ((response = sd_spi_flush()))
 	{
 		return response;
 	}
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	response = sd_spi_write_out_data(block_address, data, 512, 0);
 
-#ifdef SD_SPI_BUFFER
-	if (block_address == card.continuous_block_address)
+#if defined(SD_SPI_BUFFER)
+	if (!card.is_read_write_continuous ||
+		block_address == card.continuous_block_address) // TODO: Does this logic make sense?
 	{
-		memcpy(card.sd_spi_buffer, data, 512);
+			memcpy(card.sd_spi_buffer, data, 512);
 	}
 
 	card.is_buffer_written = 1;
 	card.buffered_block_address = block_address;
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	sd_spi_unselect_card();
-
 	return response;
 }
 
@@ -434,14 +442,13 @@ sd_spi_flush(
 	void
 )
 {
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	if (card.is_buffer_written)
 	{
 		return SD_ERR_OK;
 	}
 
 	int8_t response;
-
 	if ((response = sd_spi_write_out_data(card.buffered_block_address,
 										  card.sd_spi_buffer, 512, 0)))
 	{
@@ -455,7 +462,7 @@ sd_spi_flush(
 	
 	card.is_buffer_written = 1;
 	sd_spi_unselect_card();
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	return SD_ERR_OK;
 }
@@ -466,14 +473,13 @@ sd_spi_write_continuous_start(
 	uint32_t num_blocks_pre_erase
 )
 {
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	int8_t response;
-
 	if ((response = sd_spi_flush()))
 	{
 		return response;
 	}
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	/* Keep track of block address for error checking and buffering. */
 	card.continuous_block_address = start_block_address;
@@ -492,7 +498,6 @@ sd_spi_write_continuous_start(
 									num_blocks_pre_erase))
 		{
 			sd_spi_unselect_card();
-
 			return SD_ERR_WRITE_PRE_ERASE;
 		}
 	}
@@ -501,19 +506,17 @@ sd_spi_write_continuous_start(
 	if (sd_spi_send_command(SD_CMD_WRITE_MULTIPLE_BLOCK, start_block_address))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_WRITE_FAILURE;
 	}
 
 	card.is_read_write_continuous = 1;
 
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	sd_spi_clear_buffer();
 	card.buffered_block_address = card.continuous_block_address;
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	sd_spi_unselect_card();
-
 	return SD_ERR_OK;
 }
 
@@ -533,12 +536,12 @@ sd_spi_write_continuous_next(
 	void
 )
 {
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	int8_t response = sd_spi_flush();
 	sd_spi_clear_buffer();
 
 	return response;
-#else /* SD_SPI_BUFFER */
+#else
 	return SD_ERR_OK;
 #endif
 }
@@ -548,15 +551,14 @@ sd_spi_write_continuous_stop(
 	void
 )
 {
-#ifdef SD_SPI_BUFFER
-	int8_t response;
-
+#if defined(SD_SPI_BUFFER)
 	/* Flush buffer if it hasn't been written. */
+	int8_t response;
 	if ((response = sd_spi_flush()))
 	{
 		return response;
 	}
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	sd_spi_select_card();
 
@@ -564,12 +566,11 @@ sd_spi_write_continuous_stop(
 	if (sd_spi_wait_if_busy(SD_WRITE_TIMEOUT))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_WRITE_TIMEOUT;
 	}
 
 	/* Token is sent to signal card to stop multiple block writing. */
-  	sd_spi_spi_send(SD_TOKEN_MULTIPLE_WRITE_STOP_TRANSFER);
+  	sd_spi_send(SD_TOKEN_MULTIPLE_WRITE_STOP_TRANSFER);
 
 	card.is_read_write_continuous = 0;
 
@@ -577,7 +578,6 @@ sd_spi_write_continuous_stop(
 	if (sd_spi_wait_if_busy(SD_WRITE_TIMEOUT))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_WRITE_TIMEOUT;
 	}
 
@@ -592,7 +592,7 @@ sd_spi_read(
 	uint16_t 	byte_offset
 )
 {
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	int8_t response;
 
 	if ((response = sd_spi_flush()))
@@ -609,8 +609,6 @@ sd_spi_read(
 	if (card.buffered_block_address != block_address ||
 		!card.is_buffer_current)
 	{
-  		int8_t response;
-
 		/* Read block into buffer. */
 		if ((response = sd_spi_read_in_data(block_address, card.sd_spi_buffer,
 											512, 0)))
@@ -622,7 +620,7 @@ sd_spi_read(
 	memcpy(data_buffer, card.sd_spi_buffer + byte_offset, number_of_bytes);
 
 	return SD_ERR_OK;
-#else /* SD_SPI_BUFFER */
+#else
 	return sd_spi_read_in_data(block_address, data_buffer, number_of_bytes,
 							   byte_offset);
 #endif
@@ -633,14 +631,14 @@ sd_spi_read_continuous_start(
 	uint32_t start_block_address
 )
 {
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	int8_t response;
 
 	if ((response = sd_spi_flush()))
 	{
 		return response;
 	}
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	card.continuous_block_address = start_block_address;
 
@@ -655,27 +653,24 @@ sd_spi_read_continuous_start(
 	if (sd_spi_send_command(SD_CMD_READ_MULTIPLE_BLOCK, start_block_address))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_READ_FAILURE;
 	}
 
 	card.is_read_write_continuous = 1;
 
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	if ((response = sd_spi_read_in_data(card.continuous_block_address,
 										card.sd_spi_buffer, 512, 0)))
 	{
 		sd_spi_unselect_card();
-
 		return response;
 	}
 
 	card.continuous_block_address--;
 	card.buffered_block_address = card.continuous_block_address;
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	sd_spi_unselect_card();
-
 	return SD_ERR_OK;
 }
 
@@ -686,10 +681,10 @@ sd_spi_read_continuous(
 	uint16_t 	byte_offset
 )
 {
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	return sd_spi_read(card.continuous_block_address, data_buffer,
 					   number_of_bytes, byte_offset);
-#else /* SD_SPI_BUFFER */
+#else
 	return sd_spi_read_in_data(card.continuous_block_address, data_buffer,
 							   number_of_bytes, byte_offset);
 #endif
@@ -700,10 +695,10 @@ sd_spi_read_continuous_next(
 	void
 )
 {
-#ifdef SD_SPI_BUFFER
-	return sd_spi_read_in_data(card.continuous_block_address, card.sd_spi_buffer,
-							   512, 0);
-#else /* SD_SPI_BUFFER */
+#if defined(SD_SPI_BUFFER)
+	return sd_spi_read_in_data(card.continuous_block_address,
+							   card.sd_spi_buffer, 512, 0);
+#else
 	return SD_ERR_OK;
 #endif
 }
@@ -714,12 +709,11 @@ sd_spi_read_continuous_stop(
 )
 {
 	sd_spi_select_card();
-
 	uint16_t timeout_start = millis();
 
 	/* Since the stop command is not sent during a read, it must be sent when a
 	   read token is received. */
-	while (sd_spi_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
 	{
 		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
@@ -732,7 +726,7 @@ sd_spi_read_continuous_stop(
 	/* Send command to stop continuous reading. */
 	if ((sd_spi_send_command(SD_CMD_STOP_TRANSMISSION, 0) & 0x08) != 0)
 	{
-		while ((sd_spi_spi_receive() & 0x08) != 0)
+		while ((sd_spi_receive() & 0x08) != 0)
 		{
 			if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
 			{
@@ -763,9 +757,8 @@ sd_spi_erase_blocks(
 	uint32_t end_block_address
 )
 {
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	int8_t response;
-
 	if ((response = sd_spi_flush()))
 	{
 		return response;
@@ -778,7 +771,7 @@ sd_spi_erase_blocks(
 		card.is_buffer_written = 1;
 		card.is_buffer_current = 1;
 	}
-#endif /* SD_SPI_BUFFER */
+#endif
 
 	/* SD cards 2GB or less address by bytes so multiply by 512 to address
 	   by blocks. */
@@ -795,19 +788,16 @@ sd_spi_erase_blocks(
 		sd_spi_send_command(SD_CMD_ERASE, 0))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_ERASE_FAILURE;
 	}
 
 	if (sd_spi_wait_if_busy(SD_ERASE_TIMEOUT))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_ERASE_TIMEOUT;
 	}
 
 	sd_spi_unselect_card();
-
 	return SD_ERR_OK;
 }
 
@@ -819,13 +809,12 @@ sd_spi_card_size(
 	if (sd_spi_send_command(SD_CMD_SEND_CSD, 0))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_READ_REGISTER;
 	}
 
 	uint16_t timeout_start = millis();
 
-	while (sd_spi_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
 	{
 		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
@@ -838,32 +827,32 @@ sd_spi_card_size(
 	uint8_t c_size_low;
 	uint32_t number_of_blocks;
 
-	uint8_t b = sd_spi_spi_receive();
+	uint8_t b = sd_spi_receive();
 	uint8_t csd_structure = b >> 6;
 
 	uint8_t current_byte;
 
 	for (current_byte = 0; current_byte < 5; current_byte++)
 	{
-		sd_spi_spi_receive();
+		sd_spi_receive();
 	}
 
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	uint8_t max_read_bl_len = b & 0x0F;
 
 	if (csd_structure == 0)
 	{
 		c_size_high = (b << 2) & 0x0C;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		c_size_high |= b >> 6;
 		c_size_low = b << 2;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		c_size_low |= b >> 6;
-		sd_spi_spi_receive();
+		sd_spi_receive();
 		
 		uint8_t c_size_mult;
 		c_size_mult = (b << 1) & 0x06;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		c_size_mult |= b >> 7;
 
 		number_of_blocks = (uint32_t) ((c_size_high << 8 | c_size_low) + 1) *
@@ -872,11 +861,11 @@ sd_spi_card_size(
 	}
 	else
 	{
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		c_size_high = b;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		c_size_mid = b;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		c_size_low = b;
 
 		number_of_blocks = (uint32_t) (c_size_high << 16 | c_size_mid << 8 |
@@ -886,15 +875,14 @@ sd_spi_card_size(
 
 	for (current_byte = 11; current_byte < 16; current_byte++)
 	{
-		sd_spi_spi_receive();
+		sd_spi_receive();
 	}
 
 	/* Discard CRC. */
-	sd_spi_spi_receive();
-	sd_spi_spi_receive();
+	sd_spi_receive();
+	sd_spi_receive();
 
 	sd_spi_unselect_card();
-
 	return number_of_blocks;
 }
 
@@ -906,13 +894,12 @@ sd_spi_read_cid_register(
 	if (sd_spi_send_command(SD_CMD_SEND_CID, 0))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_READ_REGISTER;
 	}
 
 	uint16_t timeout_start = millis();
 
-	while (sd_spi_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
 	{
 		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
@@ -921,41 +908,40 @@ sd_spi_read_cid_register(
 	}
 
     /* See SD Specifications for more information. */
-	cid->mid = sd_spi_spi_receive();
+	cid->mid = sd_spi_receive();
 
 	uint8_t i;
 	for (i = 0; i < 2; i++)
 	{
-		cid->oid[i] = sd_spi_spi_receive();
+		cid->oid[i] = sd_spi_receive();
 	}
 
 	for (i = 0; i < 5; i++)
 	{
-		cid->pnm[i] = sd_spi_spi_receive();
+		cid->pnm[i] = sd_spi_receive();
 	}
 
-	i = sd_spi_spi_receive();
+	i = sd_spi_receive();
 	cid->prv_n = i >> 4;
 	cid->prv_m = i;
 
-	cid->psn_high = sd_spi_spi_receive();
-	cid->psn_mid_high = sd_spi_spi_receive();
-	cid->psn_mid_low = sd_spi_spi_receive();
-	cid->psn_low = sd_spi_spi_receive();
+	cid->psn_high = sd_spi_receive();
+	cid->psn_mid_high = sd_spi_receive();
+	cid->psn_mid_low = sd_spi_receive();
+	cid->psn_low = sd_spi_receive();
 
-	i = sd_spi_spi_receive();
+	i = sd_spi_receive();
 	cid->mdt_year = (i << 4) & 0xF0;
-	i = sd_spi_spi_receive();
+	i = sd_spi_receive();
 	cid->mdt_year |= i >> 4;
 	cid->mdt_month = i;
-	cid->crc = sd_spi_spi_receive() >> 1;
+	cid->crc = sd_spi_receive() >> 1;
 
 	/* Discard CRC */
-	sd_spi_spi_receive();
-	sd_spi_spi_receive();
+	sd_spi_receive();
+	sd_spi_receive();
 
 	sd_spi_unselect_card();
-
 	return SD_ERR_OK;
 }
 
@@ -967,13 +953,12 @@ sd_spi_read_csd_register(
 	if (sd_spi_send_command(SD_CMD_SEND_CSD, 0))
 	{
 		sd_spi_unselect_card();
-
 		return SD_ERR_READ_REGISTER;
 	}
 
 	uint16_t timeout_start = millis();
 
-	while (sd_spi_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
 	{
 		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
@@ -982,21 +967,21 @@ sd_spi_read_csd_register(
 	}
 
     /* See SD Specification for more information. */
-    uint8_t b = sd_spi_spi_receive();
+    uint8_t b = sd_spi_receive();
 	csd->csd_structure = b >> 6;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->taac = b;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->nsac = b;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->tran_speed = b;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->ccc_high = b >> 4;
 	csd->ccc_low |= b << 4;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->ccc_low |= b >> 4;
 	csd->max_read_bl_len = b;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->read_bl_partial = b >> 7;
 	csd->write_bl_misalign = b >> 6;
 	csd->read_bl_misalign = b >> 5;
@@ -1005,58 +990,57 @@ sd_spi_read_csd_register(
 	if (csd->csd_structure == 0)
 	{
 		csd->cvsi.v1.c_size_high = (b << 2) & 0x0C;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		csd->cvsi.v1.c_size_high |= b >> 6;
 		csd->cvsi.v1.c_size_low = b << 2;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		csd->cvsi.v1.c_size_low |= b >> 6;
 		csd->cvsi.v1.vdd_r_curr_min = b >> 3;
 		csd->cvsi.v1.vdd_r_curr_max = b;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		csd->cvsi.v1.vdd_w_curr_min = b >> 5;
 		csd->cvsi.v1.vdd_w_curr_max = b >> 2;
 		csd->cvsi.v1.c_size_mult = (b << 1) & 0x06;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		csd->cvsi.v1.c_size_mult |= b >> 7;
 	}
 	else
 	{
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		csd->cvsi.v2.c_size_high = b;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		csd->cvsi.v2.c_size_mid = b;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 		csd->cvsi.v2.c_size_low = b;
-		b = sd_spi_spi_receive();
+		b = sd_spi_receive();
 	}
 
 	csd->erase_bl_en = b >> 6;
 	csd->erase_sector_size = (b << 1) & 0x7E;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->erase_sector_size |= b >> 7;
 	csd->wp_grp_size = b << 1;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->wp_grp_enable = b >> 7;
 	csd->r2w_factor = b >> 2;
 	csd->write_bl_len = (b << 2) & 0x0C;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->write_bl_len |= b >> 6;
 	csd->write_bl_partial = b >> 5;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->file_format_grp = b >> 7;
 	csd->copy = b >> 6;
 	csd->perm_write_protect = b >> 5;
 	csd->tmp_write_protect = b >> 4;
 	csd->file_format = b >> 2;
-	b = sd_spi_spi_receive();
+	b = sd_spi_receive();
 	csd->crc = b >> 1;
 
 	/* Discard CRC. */
-	sd_spi_spi_receive();
-	sd_spi_spi_receive();
+	sd_spi_receive();
+	sd_spi_receive();
 
 	sd_spi_unselect_card();
-
 	return SD_ERR_OK;
 }
 
@@ -1066,11 +1050,18 @@ sd_spi_card_status(
 )
 {
 	int8_t response = sd_spi_r2_error((sd_spi_send_command(SD_CMD_SEND_STATUS, 0)
-									  << 8) | sd_spi_spi_receive());
+									  << 8) | sd_spi_receive());
 
 	sd_spi_unselect_card();
-
 	return response;
+}
+
+uint32_t
+sd_spi_current_buffered_block(
+		void
+)
+{
+	return card.buffered_block_address;
 }
 
 static void
@@ -1078,7 +1069,7 @@ sd_spi_clear_buffer(
 	void
 )
 {
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	uint16_t i;
 	for (i = 0; i < 512; i++) {
 		card.sd_spi_buffer[i] = 0;
@@ -1086,7 +1077,7 @@ sd_spi_clear_buffer(
 
 	card.is_buffer_written = 0;
 	card.is_buffer_current = 0;
-#endif /* SD_SPI_BUFFER */
+#endif
 }
 
 static int8_t
@@ -1105,12 +1096,11 @@ sd_spi_write_out_data(
 	  	if (sd_spi_wait_if_busy(SD_WRITE_TIMEOUT))
 	  	{
 	  		sd_spi_unselect_card();
-
 	  		return SD_ERR_WRITE_TIMEOUT;
 	  	}
 
 		/* Send token for multiple block write. */
-	  	sd_spi_spi_send(SD_TOKEN_MULTIPLE_WRITE_START_BLOCK);
+	  	sd_spi_send(SD_TOKEN_MULTIPLE_WRITE_START_BLOCK);
 	}
 	else
 	{
@@ -1125,12 +1115,11 @@ sd_spi_write_out_data(
 		if (sd_spi_send_command(SD_CMD_SET_WRITE_BLOCK, block_address))
 		{
 			sd_spi_unselect_card();
-
 			return SD_ERR_WRITE_FAILURE;
 		}
 
 		/* Send token for single block write. */
-		sd_spi_spi_send(SD_TOKEN_START_BLOCK);
+		sd_spi_send(SD_TOKEN_START_BLOCK);
 	}
 
 	uint16_t i;
@@ -1138,27 +1127,27 @@ sd_spi_write_out_data(
 	/* Pad data with 0. */
 	for (i = 0; i < byte_offset; i++)
 	{
-		sd_spi_spi_send(0);
+		sd_spi_send(0);
 	}
 
 	/* Write block. */
 	for (i = byte_offset; i < byte_offset + number_of_bytes; i++)
 	{
-		sd_spi_spi_send(((uint8_t *) data)[i - byte_offset]);
+		sd_spi_send(((uint8_t *) data)[i - byte_offset]);
 	}
 
 	/* Pad data with 0. */
 	for (i = byte_offset + number_of_bytes; i < 512; i++)
 	{
-		sd_spi_spi_send(0);
+		sd_spi_send(0);
 	}	
 
 	/* Send dummy CRC. */
-	sd_spi_spi_send(0xFF);
-	sd_spi_spi_send(0xFF);
+	sd_spi_send(0xFF);
+	sd_spi_send(0xFF);
 
 	/* Check if write was successful. */
-	switch (sd_spi_spi_receive() & 0x0F)
+	switch (sd_spi_receive() & 0x0F)
 	{
 		case SD_TOKEN_DATA_REJECTED_CRC:
 			return SD_ERR_WRITE_DATA_CRC_REJECTED;
@@ -1174,16 +1163,15 @@ sd_spi_write_out_data(
 	{
 		card.continuous_block_address++;
 
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 		card.buffered_block_address = card.continuous_block_address;
-#endif /* SD_SPI_BUFFER */
+#endif
 	}
 	else {
 		/* Wait for card to complete the write. */
 	  	if (sd_spi_wait_if_busy(SD_WRITE_TIMEOUT))
 	  	{
 	  		sd_spi_unselect_card();
-
 	  		return SD_ERR_WRITE_TIMEOUT;
 	  	}
 
@@ -1216,7 +1204,6 @@ sd_spi_read_in_data(
 	    if (sd_spi_send_command(SD_CMD_READ_SINGLE_BLOCK, block_address))
 	    {
 	    	sd_spi_unselect_card();
-
 	    	return SD_ERR_READ_FAILURE;
 	    }
 	}
@@ -1224,7 +1211,7 @@ sd_spi_read_in_data(
 	uint16_t timeout_start = millis();
 
     /* Must wait for read token from card before reading. */
-	while (sd_spi_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
 	{
 		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
@@ -1234,16 +1221,16 @@ sd_spi_read_in_data(
 
 	uint16_t i;
 
-#ifdef SD_SPI_BUFFER	/* Read block into sd_spi_buffer if it is defined. */
+#if defined(SD_SPI_BUFFER)	/* Read block into sd_spi_buffer if it is defined. */
 	/* Read in the bytes to the buffer. */
 	for (i = 0; i < 512; i++)
 	{
-		card.sd_spi_buffer[i] = sd_spi_spi_receive();
+		card.sd_spi_buffer[i] = sd_spi_receive();
 	}
 
 	/* Throw out CRC. */
-	sd_spi_spi_receive();
-	sd_spi_spi_receive();
+	sd_spi_receive();
+	sd_spi_receive();
 
 	if (card.is_read_write_continuous)
 	{
@@ -1261,23 +1248,23 @@ sd_spi_read_in_data(
 	}
 
 	card.is_buffer_current = 1;
-#else /* SD_SPI_BUFFER */
+#else
     /* Throw out the bytes until the offset is reached. */
 	for (i = 0; i < byte_offset; i++)
 	{
-		sd_spi_spi_receive();
+		sd_spi_receive();
 	}
 
 	/* Read in the bytes to the buffer. */
 	for (i = 0; i < number_of_bytes; i++)
 	{
-		((uint8_t *) data_buffer)[i] = sd_spi_spi_receive();
+		((uint8_t *) data_buffer)[i] = sd_spi_receive();
 	}
 
 	/* Throw out any remaining bytes in the page plus CRC. */
     for (i = 0; number_of_bytes + byte_offset + i < 514; i++)
     {
-    	sd_spi_spi_receive();
+    	sd_spi_receive();
     }
 #endif
 
@@ -1291,31 +1278,30 @@ sd_spi_send_command(
 )
 {
 	sd_spi_select_card();
-
-	sd_spi_spi_receive();
+	sd_spi_receive();
 
 	/* Send command with transmission bit. */
-	sd_spi_spi_send(0x40 | command);
+	sd_spi_send(0x40 | command);
 
 	/* Send argument. */
-	sd_spi_spi_send(argument >> 24);
-	sd_spi_spi_send(argument >> 16);
-	sd_spi_spi_send(argument >> 8);
-	sd_spi_spi_send(argument >> 0);
+	sd_spi_send(argument >> 24);
+	sd_spi_send(argument >> 16);
+	sd_spi_send(argument >> 8);
+	sd_spi_send(argument >> 0);
 
 	/* Send CRC. */
 	switch(command)
 	{
 		/* CRC for CMD0 with arg 0. */
 		case SD_CMD_GO_IDLE_STATE: 
-			sd_spi_spi_send(0x95);
+			sd_spi_send(0x95);
 			break; 
 		/* CRC for CMD8 with arg 0X1AA. */
 		case SD_CMD_SEND_IF_COND:
-			sd_spi_spi_send(0x87);
+			sd_spi_send(0x87);
 			break; 
 		default:
-			sd_spi_spi_send(0xFF);
+			sd_spi_send(0xFF);
 			break;
 	}
 
@@ -1324,7 +1310,7 @@ sd_spi_send_command(
 	uint8_t response;
 	for (i = 0; i < 8; i++)
 	{
-		response = sd_spi_spi_receive();
+		response = sd_spi_receive();
 
 		if (response != 0xFF)
 		{
@@ -1342,7 +1328,6 @@ sd_spi_send_app_command(
 )
 {
 	sd_spi_send_command(SD_CMD_APP, 0);
-
 	return sd_spi_send_command(command, argument);
 }
 
@@ -1353,7 +1338,7 @@ sd_spi_wait_if_busy(
 {
 	uint16_t timeout_start = millis();
 
-	while (sd_spi_spi_receive() != 0xFF)
+	while (sd_spi_receive() != 0xFF)
 	{
 		if (((uint16_t) millis() - timeout_start) > max_time_to_wait)
 		{
@@ -1462,9 +1447,23 @@ sd_spi_select_card(
 	void
 )
 {
-#ifdef USE_HARDWARE_SPI
+#if defined(USE_HARDWARE_SPI)
+	// TODO: Set CS pin low
 
-#else /* USE_HARDWARE_SPI */
+	if (card.is_chip_select_high)
+	{
+    	card.is_chip_select_high = 0;
+
+    	if (card.spi_speed == 0)
+    	{
+    		// TODO: Begin SPI transaction at the slowest speed
+    	}
+    	else
+    	{
+    		// TODO: Begin SPI transaction at the fastest speed
+    	}
+    }
+#else
 	digitalWrite(card.chip_select_pin, LOW);
 
 	if (card.is_chip_select_high)
@@ -1488,12 +1487,19 @@ sd_spi_unselect_card(
 	void
 )
 {
-#ifdef USE_HARDWARE_SPI
+	sd_spi_receive();
 
-#else /* USE_HARDWARE_SPI */
+#if defined(USE_HARDWARE_SPI)
+	// TODO: Set CS pin high
+
+	if (!card.is_chip_select_high)
+	{
+    	card.is_chip_select_high = 1;
+
+    	// TODO: End SPI transaction
+    }
+#else
 	/* Host has to wait 8 clock cycles after a command. */
-	sd_spi_spi_receive();
-
 	digitalWrite(card.chip_select_pin, HIGH);
 
 	if (!card.is_chip_select_high)
@@ -1505,25 +1511,25 @@ sd_spi_unselect_card(
 }
 
 static void
-sd_spi_spi_send(
+sd_spi_send(
 	uint8_t b
 )
 {
-#ifdef USE_HARDWARE_SPI
-
-#else /* USE_HARDWARE_SPI */
+#if defined(USE_HARDWARE_SPI)
+	// TODO: Send a byte over SPI
+#else
 	SPI.transfer(b);
 #endif
 }
 
 static uint8_t
-sd_spi_spi_receive(
+sd_spi_receive(
 	void
 )
 {
-#ifdef USE_HARDWARE_SPI
-
-#else /* USE_HARDWARE_SPI */
+#if defined(USE_HARDWARE_SPI)
+	// TODO: Send dummy byte to receive a byte from SPI
+#else
 	return SPI.transfer(0xFF);
 #endif
 }

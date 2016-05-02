@@ -22,10 +22,10 @@
 */
 /******************************************************************************/
 
-#ifndef SD_SPI_COMMANDS_H_
+#if !defined(SD_SPI_COMMANDS_H_)
 #define SD_SPI_COMMANDS_H_
 
-#ifdef  __cplusplus
+#if defined(__cplusplus)
 extern "C" {
 #endif
 
@@ -273,7 +273,7 @@ extern "C" {
 */
 #define SD_ACMD_SEND_SCR 0x33
 
-#ifdef  __cplusplus
+#if defined(__cplusplus)
 }
 #endif
 

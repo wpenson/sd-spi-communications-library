@@ -25,13 +25,17 @@ If you wish to run the unit tests, you must clone the project with `git clone --
 
 ## Examples
 #### Simple Read/Write
-```
+```C
 #include <SPI.h>
 #include "sd_spi.h"
 
 #define CHIP_SELECT_PIN 4
 
 void setup() {
+    Serial.begin(115200);
+
+	while (!Serial) {;}
+
     if (sd_spi_init(CHIP_SELECT_PIN) == SD_ERR_OK) {
         Serial.println("Successfully initialized the card!")
     }
@@ -42,7 +46,7 @@ void setup() {
         Serial.println("Write failed.")
     }
     
-    // Data is not written out to the device until a different block is read or until we call flush.
+    // Data is not written out to the device until a different block is read or until we explicitly call flush.
     if (sd_spi_flush() != SD_ERR_OK) {
         Serial.println("Write failed.")
     }
@@ -52,7 +56,7 @@ void loop() {}
 ```
 
 #### Sequential Read/Write
-```
+```C
 #include <SPI.h>
 #include "sd_spi.h"
 
@@ -86,7 +90,7 @@ void loop() {}
 - Add the Doxygen generator configuration
 
 ## Support
-If there are any bugs, create a new issue with a detailed description of your bug. If you have any questions or suggestions, please send me an email.
+If there are any bugs, create a new issue with a detailed description of your bug. If you have any questions or suggestions, please send me an email. Feel free to contribute to this repository. Any improvements will be greatly appreciated.
 
 ## Author
 Wade Penson

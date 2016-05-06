@@ -11,7 +11,7 @@ setup(
     	; // wait for serial port to connect. Needed for Leonardo only
  	}
 
- 	runalltests_tefs();
+ 	runalltests_sd_spi();
 }
 
 void

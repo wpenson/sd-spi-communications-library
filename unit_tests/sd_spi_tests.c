@@ -267,7 +267,7 @@ tefs_getsuite(
 }
 
 void
-runalltests_tefs(
+runalltests_sd_spi(
 	void
 )
 {

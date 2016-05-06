@@ -1,7 +1,7 @@
 /******************************************************************************/
 /**
 @file		sd_spi_info.h
-@author     Wade H. Penson
+@author     Wade Penson
 @date		June, 2015
 @brief      Structures to store information from CID (Card Identification)
 			and CSD (Card Specific Data) registers for SD cards.

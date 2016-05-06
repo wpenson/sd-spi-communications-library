@@ -1,7 +1,7 @@
 /******************************************************************************/
 /**
 @file       sd_spi_commands.h
-@author     Wade H. Penson
+@author     Wade Penson
 @date       June, 2015
 @brief      SPI bus commands for SD/MMC.
 @details    The set of commands can be found in the simplified physical

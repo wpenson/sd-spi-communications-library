@@ -1,3 +1,25 @@
+/******************************************************************************/
+/**
+@file		card_info.ino
+@author     Wade Penson
+@date		June, 2015
+@brief      Outputs the information from the resisters in a card.
+@copyright  Copyright 2015 Wade Penson
+
+@license    Licensed under the Apache License, Version 2.0 (the "License");
+            you may not use this file except in compliance with the License.
+            You may obtain a copy of the License at
+
+              http://www.apache.org/licenses/LICENSE-2.0
+
+            Unless required by applicable law or agreed to in writing, software
+            distributed under the License is distributed on an "AS IS" BASIS,
+            WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or 
+            implied. See the License for the specific language governing
+            permissions and limitations under the License.
+*/
+/******************************************************************************/
+
 #include <SPI.h>
 #include "sd_spi.h"
 

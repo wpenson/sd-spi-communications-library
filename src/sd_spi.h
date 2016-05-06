@@ -1,7 +1,7 @@
 /******************************************************************************/
 /**
 @file		sd_spi.h
-@author     Wade H. Penson
+@author     Wade Penson
 @date		June, 2015
 @brief      SD RAW library header.
 @details	This library supports MMC, SD1, SD2, and SDHC/SDXC type cards.

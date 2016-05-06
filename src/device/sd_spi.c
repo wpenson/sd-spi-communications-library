@@ -1,7 +1,7 @@
 /******************************************************************************/
 /**
 @file		sd_spi.cpp
-@author     Wade H. Penson
+@author     Wade Penson
 @date		June, 2015
 @brief      SD SPI library implementation.
 @copyright  Copyright 2015 Wade Penson

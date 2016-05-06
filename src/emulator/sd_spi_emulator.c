@@ -1,10 +1,10 @@
 /******************************************************************************/
 /**
 @file		sd_spi_emulator.h
-@author     Wade H. Penson
+@author     Wade Penson
 @date		June, 2015
 @brief      SD SPI emulated library implementation.
-@copyright  Copyright 2015 Lawrence, Fazackerley, Douglas, Huang, Penson.
+@copyright  Copyright 2015 Wade Penson
 
 @license    Licensed under the Apache License, Version 2.0 (the "License");
             you may not use this file except in compliance with the License.

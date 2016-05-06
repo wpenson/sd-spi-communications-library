@@ -1,7 +1,7 @@
 /******************************************************************************/
 /**
 @file		arduino_platform_dependencies.cpp
-@author     Wade H. Penson
+@author     Wade Penson
 @date		June, 2015
 @brief      Arduino dependencies needed by the SD SPI library.
 @copyright  Copyright 2015 Wade Penson

@@ -20,8 +20,13 @@
 */
 /******************************************************************************/
 
-#include "sd_spi_emulator.h"
-#include "./../sd_spi_commands.h"
+#include "../sd_spi.h"
+#include <stdio.h>
+
+#define SD_NUMBER_OF_BLOCKS (1 << 16)
+
+/** Pointer for the file used to emulate the card. */
+FILE *fp;
 
 uint8_t 	sd_spi_dirty_write 	= 0;
 uint32_t	num_reads 			= 0;
@@ -117,29 +122,29 @@ sd_spi_init(
 	card.is_buffer_written = 1;
 #endif
 
-	if ((card.fp = fopen("data.raw", "rb+")) == NULL)
+	if ((fp = fopen("data.raw", "rb+")) == NULL)
 	{
-		if ((card.fp = fopen("data.raw", "wb+")) == NULL)
+		if ((fp = fopen("data.raw", "wb+")) == NULL)
 		{
 			return SD_ERR_INIT_TIMEOUT;
 		}
 	}
 
-	if (fseek(card.fp, 0, SEEK_END) != 0)
+	if (fseek(fp, 0, SEEK_END) != 0)
 	{
 		return SD_ERR_INIT_TIMEOUT;
 	}
 
 	int32_t size;
 
-	if ((size = ftell(card.fp)) == -1)
+	if ((size = ftell(fp)) == -1)
 	{
 		return SD_ERR_INIT_TIMEOUT;
 	}
 
 	if (size < (sd_spi_card_size() << 9))
 	{
-		rewind(card.fp);
+		rewind(fp);
 
 		uint64_t current_byte;
 		char val = 0;
@@ -148,16 +153,16 @@ sd_spi_init(
 			 current_byte < (sd_spi_card_size() << 9);
 			 current_byte++)
 		{
-			fwrite(&val, 1, 1, card.fp);
+			fwrite(&val, 1, 1, fp);
 		}
 
-		if (fflush(card.fp) != 0)
+		if (fflush(fp) != 0)
 		{
 			return SD_ERR_INIT_TIMEOUT;
 		}
 	}
 
-	if (fclose(card.fp) != 0)
+	if (fclose(fp) != 0)
 	{
 		return SD_ERR_INIT_TIMEOUT;
 	}
@@ -509,12 +514,12 @@ sd_spi_erase_blocks(
 	}
 #endif
 
-	if ((card.fp = fopen("data.raw", "rb+")) == NULL)
+	if ((fp = fopen("data.raw", "rb+")) == NULL)
 	{
 		return SD_ERR_ERASE_FAILURE;
 	}
 
-	if (fseek(card.fp, start_block_address << 9, SEEK_SET) != 0)
+	if (fseek(fp, start_block_address << 9, SEEK_SET) != 0)
 	{
 		return SD_ERR_ERASE_FAILURE;
 	}
@@ -525,15 +530,15 @@ sd_spi_erase_blocks(
 		 current_byte < end_block_address << 9;
 		 current_byte++)
 	{
-		fwrite(&val, 1, 1, card.fp);
+		fwrite(&val, 1, 1, fp);
 	}
 
-	if (fflush(card.fp) != 0)
+	if (fflush(fp) != 0)
 	{
 		return SD_ERR_ERASE_FAILURE;
 	}
 
-	if (fclose(card.fp) != 0)
+	if (fclose(fp) != 0)
 	{
 		return SD_ERR_ERASE_FAILURE;
 	}
@@ -641,17 +646,17 @@ print_page(
 	uint32_t 	block_address
 )
 {
-	if ((card.fp = fopen("data.raw", "rb+")) == NULL)
+	if ((fp = fopen("data.raw", "rb+")) == NULL)
 	{
 		return SD_ERR_READ_FAILURE;
 	}
 
 	uint8_t buffer[512];
 
-	fseek(card.fp, block_address << 9, SEEK_SET);
-	fread(buffer, 512, 1, card.fp);
+	fseek(fp, block_address << 9, SEEK_SET);
+	fread(buffer, 512, 1, fp);
 
-	if (fclose(card.fp) != 0)
+	if (fclose(fp) != 0)
 	{
 		return SD_ERR_READ_FAILURE;
 	}
@@ -699,12 +704,12 @@ sd_spi_write_out_data(
 {
 	sd_spi_select_card();
 
-	if ((card.fp = fopen("data.raw", "rb+")) == NULL)
+	if ((fp = fopen("data.raw", "rb+")) == NULL)
 	{
 		return SD_ERR_WRITE_FAILURE;
 	}
 
-	if (fseek(card.fp, block_address << 9, SEEK_SET) != 0)
+	if (fseek(fp, block_address << 9, SEEK_SET) != 0)
 	{
 		return SD_ERR_WRITE_FAILURE;
 	}
@@ -739,14 +744,14 @@ sd_spi_write_out_data(
 #endif
 	}
 
-	fwrite(output_buffer, 512, 1, card.fp);
+	fwrite(output_buffer, 512, 1, fp);
 	
-	if (fflush(card.fp) != 0)
+	if (fflush(fp) != 0)
 	{
 		return SD_ERR_WRITE_FAILURE;
 	}
 
-	if (fclose(card.fp) != 0)
+	if (fclose(fp) != 0)
 	{
 		return SD_ERR_WRITE_FAILURE;
 	}
@@ -765,14 +770,14 @@ sd_spi_read_in_data(
 {
 	sd_spi_select_card();
 
-	if ((card.fp = fopen("data.raw", "rb+")) == NULL)
+	if ((fp = fopen("data.raw", "rb+")) == NULL)
 	{
 		return SD_ERR_READ_FAILURE;
 	}
 
 #if defined(SD_SPI_BUFFER)	/* Read block into sd_spi_buffer if it is defined. */
-	fseek(card.fp, block_address << 9, SEEK_SET);
-	fread(card.sd_spi_buffer, 512, 1, card.fp);
+	fseek(fp, block_address << 9, SEEK_SET);
+	fread(card.sd_spi_buffer, 512, 1, fp);
 
 	if (card.is_read_write_continuous)
 	{
@@ -786,11 +791,11 @@ sd_spi_read_in_data(
 
 	card.is_buffer_current = 1;
 #else
-	fseek(card.fp, (block_address << 9) + byte_offset, SEEK_SET);
-	fread(data_buffer, number_of_bytes, 1, card.fp);
+	fseek(fp, (block_address << 9) + byte_offset, SEEK_SET);
+	fread(data_buffer, number_of_bytes, 1, fp);
 #endif
 
-	if (fclose(card.fp) != 0)
+	if (fclose(fp) != 0)
 	{
 		return SD_ERR_READ_FAILURE;
 	}

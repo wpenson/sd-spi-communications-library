@@ -19,7 +19,7 @@ setup(
 
 	int error = 0;
 
-	if (error = sd_init(CHIP_SELECT_PIN)) {
+	if (error = sd_spi_init(CHIP_SELECT_PIN)) {
 		Serial.print(F("Initialization failed. Error code: "));
 		Serial.println(error);
 		return;
@@ -28,7 +28,7 @@ setup(
 	Serial.println(F("\n\n\nInitialized successfully!"));
 
 	Serial.print(F("Card type: "));
-	switch (card.card_type) {
+	switch (sd_spi_card_type()) {
 		case 0 : Serial.println(F("Undefined")); break;
 		case 1 : Serial.println(F("SD1")); break;
 		case 2 : Serial.println(F("SD2")); break;
@@ -40,8 +40,8 @@ setup(
 	/* Read registers
 	/*******************************/
 
-	sd_cid_t cid;
-	if (sd_read_cid_register(&cid)) {
+	sd_spi_cid_t cid;
+	if (sd_spi_read_cid_register(&cid)) {
 		Serial.print(F("Failed to read cid. Error code: "));
 		Serial.println(error);
 		return;
@@ -77,8 +77,8 @@ setup(
 	char *yes = "Yes";
 	char *no = "No";
 
-	sd_csd_t csd;
-	if (sd_read_csd_register(&csd)) {
+	sd_spi_csd_t csd;
+	if (sd_spi_read_csd_register(&csd)) {
 		Serial.print(F("Failed to read cid. Error code: "));
 		Serial.println(error);
 		return;
@@ -88,11 +88,11 @@ setup(
 	Serial.print(csd.csd_structure);
 
 	Serial.print(F("\nCard size: "));
-	Serial.print((double) card.number_of_blocks * 512 / 1000000, 0);
+	Serial.print((double) sd_spi_card_size() * 512 / 1000000, 0);
 	Serial.print(F(" MB"));
 
 	Serial.print(F("\nNumber of blocks: "));
-	Serial.print(card.number_of_blocks);
+	Serial.print(sd_spi_card_size());
 
 	Serial.print(F("\nRead block partial: "));
 	Serial.print((csd.read_bl_partial) ? yes : no);
@@ -131,4 +131,11 @@ setup(
 		Serial.print(F("Universal File Format"));
 	else if (csd.file_format == 3)
 		Serial.print(F("Other/Unknown"));
+}
+
+void
+loop(
+)
+{
+
 }

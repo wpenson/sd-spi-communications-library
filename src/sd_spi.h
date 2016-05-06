@@ -1,14 +1,14 @@
 /******************************************************************************/
 /**
-@file		sd_spi_emulator.h
+@file		sd_spi.h
 @author     Wade H. Penson
 @date		June, 2015
-@brief      SD SPI emulated library header.
-@details	This library emulates read from and writing to an SD card.
+@brief      SD RAW library header.
+@details	This library supports MMC, SD1, SD2, and SDHC/SDXC type cards.
 			By defining SD_BUFFER, the library also implements a 512 byte buffer
 			for reading and writing.
 
-@copyright  Copyright 2015 Lawrence, Fazackerley, Douglas, Huang, Penson.
+@copyright  Copyright 2015 Wade Penson
 
 @license    Licensed under the Apache License, Version 2.0 (the "License");
             you may not use this file except in compliance with the License.
@@ -21,23 +21,42 @@
             WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or 
             implied. See the License for the specific language governing
             permissions and limitations under the License.
+
+@todo 		Support for AVR and SAMX AVR without using the Arduino SPI library.
+@todo 		Support for using Software SPI (bit banging).
+@todo 		Use CMD6 during initialization to switch card to high speed mode if
+			it supports it. This will be helpful for the due since the SPI
+			speed can be up to 84MHz.
+@todo 		Allow setting CS high when card is in busy state for operations
+			instead of waiting. However, if an error is thrown for the
+			operation, the host will get that error on the next command it
+			sends.
+@todo 		Send_status should be sent after all busy signals
+			(look at ch 4.3.7).
+@todo 		Send stop_transmission if there was an error during
+			write continuous (and read continuous??).
+@todo 		Get the number of well written blocks for sequential writing just in
+			case if there was an error.
+@todo 		Card reads take up to 100ms and writes take up to 500ms. Make
+			timeouts reflect this.
+@todo 		Reduce the number of error codes.
 */
 /******************************************************************************/
 
-#ifndef SD_SPI_H_
+#if !defined(SD_SPI_H_)
 #define SD_SPI_H_
 
-#ifdef  __cplusplus
+#if defined(__cplusplus)
 extern "C" {
 #endif
 
-#include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#include "./../sd_spi_info.h"
+#include "sd_spi_info.h"
+#include "sd_spi_commands.h"
 
+/** Define to enable the block buffer. */
 #define SD_SPI_BUFFER
-#define SD_NUMBER_OF_BLOCKS (1 << 16)
 
 /** State variables used by the SD raw library. */
 typedef struct sd_spi_card {
@@ -57,10 +76,7 @@ typedef struct sd_spi_card {
 		of the block being read or written to. */
 	uint32_t continuous_block_address;
 
-	/* Pointer for the file used to emulate the card. */
-	FILE *fp;
-
-#ifdef SD_SPI_BUFFER
+#if defined(SD_SPI_BUFFER)
 	/** Buffer for SD blocks. */
 	uint8_t sd_spi_buffer[512];
 	/** The address of the block currently being buffered. */
@@ -69,7 +85,7 @@ typedef struct sd_spi_card {
 	uint8_t is_buffer_current:			1;
 	/** Keeps track if the buffer has been flushed or not. */
 	uint8_t is_buffer_written:			1;
-#endif /* SD_SPI_BUFFER */
+#endif
 } sd_spi_card_t;
 
 /**
@@ -415,7 +431,7 @@ sd_spi_read_continuous_stop(
 /**
 @brief		Erases all the blocks on the card.
 @details	All of the bits will be set with the default value of 0 or 1
-			depending on the card.
+		HC	depending on the card.
 
 @return		An error code as defined by one of the SD_ERR_* definitions.
 */
@@ -449,6 +465,16 @@ sd_spi_erase_blocks(
 */
 uint32_t
 sd_spi_card_size(
+	void
+);
+
+/**
+@brief		Gets the type of the card. 1 = SD1, 2 = SD2, 3 = SDHC, and 4 = MMC.
+
+@return		An error code as defined by one of the SD_ERR_* definitions.
+*/
+uint8_t
+sd_spi_card_type(
 	void
 );
 
@@ -497,7 +523,7 @@ sd_spi_current_buffered_block(
 	void
 );
 
-#ifdef  __cplusplus
+#if defined(__cplusplus)
 }
 #endif
 

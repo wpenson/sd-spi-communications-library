@@ -20,13 +20,8 @@
 */
 /******************************************************************************/
 
-#if defined(ARDUINO) && !defined(USE_HARDWARE_SPI)
-#include <Arduino.h>
-#include <SPI.h>
-#endif
-
-#include "sd_spi.h"
-#include "../sd_spi_commands.h"
+#include "sd_spi_platform_dependencies.h"
+#include "../sd_spi.h"
 
 uint8_t sd_spi_dirty_write = 0;
 
@@ -93,7 +88,7 @@ sd_spi_read_in_data(
 @return	The R1 response from the card.
 */
 static uint8_t
-sd_spi_send_command(
+sd_spi_send_byte_command(
 	uint8_t 	command,
 	uint32_t 	argument
 );
@@ -107,7 +102,7 @@ sd_spi_send_command(
 @return	The R1 response from the card.
 */
 static uint8_t
-sd_spi_send_app_command(
+spi_send_byte_app_command(
 	uint8_t 	command,
 	uint32_t 	argument
 );
@@ -121,7 +116,7 @@ sd_spi_send_app_command(
 */
 static int8_t
 sd_spi_wait_if_busy(
-	uint16_t max_time_to_wait
+	uint32_t max_time_to_wait
 );
 
 /**
@@ -166,22 +161,6 @@ sd_spi_unselect_card(
 	void
 );
 
-/**
-@brief	Sends a byte over the SPI bus.
-*/
-static void
-sd_spi_send(
-	uint8_t b
-);
-
-/**
-@brief	Receives a byte from the SPI bus.
-*/
-static uint8_t
-sd_spi_receive(
-	void
-);
-
 int8_t
 sd_spi_init(
 	uint8_t chip_select_pin
@@ -201,37 +180,29 @@ sd_spi_init(
 	card.is_buffer_written = 1;
 #endif
 
-#if defined(USE_HARDWARE_SPI)
-	// TODO: Set CS as output and high.
-	// TODO: Begin transaction for SPI at the slowest speed?
-#else
-	/* Set CS high. */
-  	pinMode(chip_select_pin, OUTPUT);
-  	digitalWrite(chip_select_pin, HIGH);
+  	sd_spi_pin_mode(chip_select_pin, OUTPUT);
+  	sd_spi_digital_write(chip_select_pin, HIGH);
 
-  	SPI.begin();
-	SPI.beginTransaction(SPISettings(250000, MSBFIRST, SPI_MODE0));
-#endif
+  	sd_spi_begin();
+	sd_spi_begin_transaction(250000);
 
 	/* Send at least 74 clock pulses to enter the native operating mode
 	   (80 in this case). */
 	uint16_t i;
   	for (i = 0; i < 10; i++)
   	{
-  		sd_spi_send(0xFF);
+  		sd_spi_send_byte(0xFF);
   	}
 	
-#if !defined(USE_HARDWARE_SPI)
-	SPI.endTransaction();
-#endif
+  	sd_spi_end_transaction();
 
   	/* Record start time to check for initialization timeout. */
-	uint16_t init_start_time =  millis();
+	uint16_t init_start_time =  sd_spi_millis();
 
 	/* Send CMD0 to put card in SPI mode. The card will respond with 0x01. */
-	while (sd_spi_send_command(SD_CMD_GO_IDLE_STATE, 0) != SD_IN_IDLE_STATE)
+	while (sd_spi_send_byte_command(SD_CMD_GO_IDLE_STATE, 0) != SD_IN_IDLE_STATE)
 	{
-		if (((uint16_t) millis() - init_start_time) > SD_INIT_TIMEOUT)
+		if (((uint16_t) sd_spi_millis() - init_start_time) > SD_INIT_TIMEOUT)
 		{
 			sd_spi_unselect_card();
 			return SD_ERR_INIT_TIMEOUT;
@@ -241,22 +212,22 @@ sd_spi_init(
   	/* Check SD card type. First send CMD8 with the argument for the voltage
   	   range of 2.7 - 3.6 and a test pattern AA. If the card doesn't support
   	   this command, then it is of type SD1 or MMC */
-  	if ((sd_spi_send_command(SD_CMD_SEND_IF_COND, 0x1AA) & SD_ILLEGAL_COMMAND)
+  	if ((sd_spi_send_byte_command(SD_CMD_SEND_IF_COND, 0x1AA) & SD_ILLEGAL_COMMAND)
   		 == 0)
   	{
   		/* Discard first 2 bytes of R7. */
-  		sd_spi_receive();
-  		sd_spi_receive();
+  		sd_spi_receive_byte();
+  		sd_spi_receive_byte();
 
   		/* Check if voltage range is accepted. */
-    	if ((sd_spi_receive() & 0x01) == 0)
+    	if ((sd_spi_receive_byte() & 0x01) == 0)
     	{
     		sd_spi_unselect_card();
 			return SD_ERR_OUTSIDE_VOLTAGE_RANGE;
 		}
 
 		/* Check if the test pattern is the same. */
-    	if (sd_spi_receive() != 0xAA)
+    	if (sd_spi_receive_byte() != 0xAA)
     	{
     		sd_spi_unselect_card();
       		return SD_ERR_SEND_IF_COND_WRONG_TEST_PATTERN;
@@ -265,14 +236,14 @@ sd_spi_init(
     	card.card_type = SD_CARD_TYPE_SD2;
   	}
 
-  	init_start_time = millis();
+  	init_start_time = sd_spi_millis();
 
   	/* Initialize card. */
 	if (card.card_type == SD_CARD_TYPE_SD2)
 	{
-		while (sd_spi_send_app_command(SD_ACMD_SEND_OP_COND, 0x40000000) != 0)
+		while (spi_send_byte_app_command(SD_ACMD_SEND_OP_COND, 0x40000000) != 0)
 		{
-			if (((uint16_t) millis() - init_start_time) > SD_INIT_TIMEOUT)
+			if (((uint16_t) sd_spi_millis() - init_start_time) > SD_INIT_TIMEOUT)
 			{
 				sd_spi_unselect_card();
 				return SD_ERR_INIT_TIMEOUT;
@@ -280,35 +251,35 @@ sd_spi_init(
 		}
 
 		/* Check to see if card is of type SDHC (or SDXC) by reading OCR. */
-		if (sd_spi_send_command(SD_CMD_READ_OCR, 0))
+		if (sd_spi_send_byte_command(SD_CMD_READ_OCR, 0))
 		{
 			sd_spi_unselect_card();
 			return SD_ERR_OCR_REGISTER;
     	}
 
-		if ((sd_spi_receive() & 0x40) != 0)
+		if ((sd_spi_receive_byte() & 0x40) != 0)
 		{
 			card.card_type = SD_CARD_TYPE_SDHC;
 		}
 
 		/* Discard rest of OCR. */
-		sd_spi_receive();
-		sd_spi_receive();
-		sd_spi_receive();
+		sd_spi_receive_byte();
+		sd_spi_receive_byte();
+		sd_spi_receive_byte();
 	}
 	else
 	{
 		/* Send AMCD41 to try initializing card and if card doesn't support this
 		   command, it is most likely of type MMC or an earlier version of SD. */
-		while (sd_spi_send_app_command(SD_ACMD_SEND_OP_COND, 0) != 0)
+		while (spi_send_byte_app_command(SD_ACMD_SEND_OP_COND, 0) != 0)
 		{
-			if (((uint16_t) millis() - init_start_time) > 500)
+			if (((uint16_t) sd_spi_millis() - init_start_time) > 500)
 			{
 				/* If sending CMD1 times out, the card is of unknown type. */
-				while (sd_spi_send_command(SD_CMD_SEND_OP_COND, 0) !=
+				while (sd_spi_send_byte_command(SD_CMD_SEND_OP_COND, 0) !=
 					   SD_IN_IDLE_STATE)
 				{
-					if (((uint16_t) millis() - init_start_time) >
+					if (((uint16_t) sd_spi_millis() - init_start_time) >
 						SD_INIT_TIMEOUT + 500)
 					{
 						sd_spi_unselect_card();
@@ -328,7 +299,7 @@ sd_spi_init(
 	}
 
 	/* Set block size to 512 bytes. */
-    if (sd_spi_send_command(SD_CMD_SET_BLOCKLEN, 512))
+    if (sd_spi_send_byte_command(SD_CMD_SET_BLOCKLEN, 512))
     {
     	sd_spi_unselect_card();
     	return SD_ERR_SETTING_BLOCK_LENGTH;
@@ -494,7 +465,7 @@ sd_spi_write_continuous_start(
 	/* Optionally pre-erase blocks for faster writing. */
 	if (num_blocks_pre_erase != 0)
 	{
-		if (sd_spi_send_app_command(SD_ACMD_SET_WR_BLK_ERASE_COUNT,
+		if (spi_send_byte_app_command(SD_ACMD_SET_WR_BLK_ERASE_COUNT,
 									num_blocks_pre_erase))
 		{
 			sd_spi_unselect_card();
@@ -503,7 +474,7 @@ sd_spi_write_continuous_start(
 	}
 
 	/* Start multiple block write. */
-	if (sd_spi_send_command(SD_CMD_WRITE_MULTIPLE_BLOCK, start_block_address))
+	if (sd_spi_send_byte_command(SD_CMD_WRITE_MULTIPLE_BLOCK, start_block_address))
 	{
 		sd_spi_unselect_card();
 		return SD_ERR_WRITE_FAILURE;
@@ -570,7 +541,7 @@ sd_spi_write_continuous_stop(
 	}
 
 	/* Token is sent to signal card to stop multiple block writing. */
-  	sd_spi_send(SD_TOKEN_MULTIPLE_WRITE_STOP_TRANSFER);
+  	sd_spi_send_byte(SD_TOKEN_MULTIPLE_WRITE_STOP_TRANSFER);
 
 	card.is_read_write_continuous = 0;
 
@@ -650,7 +621,7 @@ sd_spi_read_continuous_start(
 	}
 
 	/* Start multiple block reading. */
-	if (sd_spi_send_command(SD_CMD_READ_MULTIPLE_BLOCK, start_block_address))
+	if (sd_spi_send_byte_command(SD_CMD_READ_MULTIPLE_BLOCK, start_block_address))
 	{
 		sd_spi_unselect_card();
 		return SD_ERR_READ_FAILURE;
@@ -709,26 +680,26 @@ sd_spi_read_continuous_stop(
 )
 {
 	sd_spi_select_card();
-	uint16_t timeout_start = millis();
+	uint16_t timeout_start = sd_spi_millis();
 
 	/* Since the stop command is not sent during a read, it must be sent when a
 	   read token is received. */
-	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive_byte() != SD_TOKEN_START_BLOCK)
 	{
-		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
+		if (((uint16_t) sd_spi_millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
 			return sd_spi_card_status();
 	    }
 	}
 
-	timeout_start = millis();
+	timeout_start = sd_spi_millis();
 
 	/* Send command to stop continuous reading. */
-	if ((sd_spi_send_command(SD_CMD_STOP_TRANSMISSION, 0) & 0x08) != 0)
+	if ((sd_spi_send_byte_command(SD_CMD_STOP_TRANSMISSION, 0) & 0x08) != 0)
 	{
-		while ((sd_spi_receive() & 0x08) != 0)
+		while ((sd_spi_receive_byte() & 0x08) != 0)
 		{
-			if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
+			if (((uint16_t) sd_spi_millis() - timeout_start) > SD_READ_TIMEOUT)
 			{
 				sd_spi_unselect_card();
 
@@ -783,9 +754,9 @@ sd_spi_erase_blocks(
 
 	/* The start and end address of the blocks to be erased must be sent to the
 	   SD and then the erase command is called. */
-	if (sd_spi_send_command(SD_CMD_ERASE_WR_BLK_START, start_block_address) ||
-		sd_spi_send_command(SD_CMD_ERASE_WR_BLK_END, end_block_address) ||
-		sd_spi_send_command(SD_CMD_ERASE, 0))
+	if (sd_spi_send_byte_command(SD_CMD_ERASE_WR_BLK_START, start_block_address) ||
+		sd_spi_send_byte_command(SD_CMD_ERASE_WR_BLK_END, end_block_address) ||
+		sd_spi_send_byte_command(SD_CMD_ERASE, 0))
 	{
 		sd_spi_unselect_card();
 		return SD_ERR_ERASE_FAILURE;
@@ -806,17 +777,17 @@ sd_spi_card_size(
 	void
 )
 {
-	if (sd_spi_send_command(SD_CMD_SEND_CSD, 0))
+	if (sd_spi_send_byte_command(SD_CMD_SEND_CSD, 0))
 	{
 		sd_spi_unselect_card();
 		return SD_ERR_READ_REGISTER;
 	}
 
-	uint16_t timeout_start = millis();
+	uint16_t timeout_start = sd_spi_millis();
 
-	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive_byte() != SD_TOKEN_START_BLOCK)
 	{
-		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
+		if (((uint16_t) sd_spi_millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
 			return sd_spi_card_status();
 	    }
@@ -827,32 +798,32 @@ sd_spi_card_size(
 	uint8_t c_size_low;
 	uint32_t number_of_blocks;
 
-	uint8_t b = sd_spi_receive();
+	uint8_t b = sd_spi_receive_byte();
 	uint8_t csd_structure = b >> 6;
 
 	uint8_t current_byte;
 
 	for (current_byte = 0; current_byte < 5; current_byte++)
 	{
-		sd_spi_receive();
+		sd_spi_receive_byte();
 	}
 
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	uint8_t max_read_bl_len = b & 0x0F;
 
 	if (csd_structure == 0)
 	{
 		c_size_high = (b << 2) & 0x0C;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		c_size_high |= b >> 6;
 		c_size_low = b << 2;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		c_size_low |= b >> 6;
-		sd_spi_receive();
+		sd_spi_receive_byte();
 		
 		uint8_t c_size_mult;
 		c_size_mult = (b << 1) & 0x06;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		c_size_mult |= b >> 7;
 
 		number_of_blocks = (uint32_t) ((c_size_high << 8 | c_size_low) + 1) *
@@ -861,11 +832,11 @@ sd_spi_card_size(
 	}
 	else
 	{
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		c_size_high = b;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		c_size_mid = b;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		c_size_low = b;
 
 		number_of_blocks = (uint32_t) (c_size_high << 16 | c_size_mid << 8 |
@@ -875,12 +846,12 @@ sd_spi_card_size(
 
 	for (current_byte = 11; current_byte < 16; current_byte++)
 	{
-		sd_spi_receive();
+		sd_spi_receive_byte();
 	}
 
 	/* Discard CRC. */
-	sd_spi_receive();
-	sd_spi_receive();
+	sd_spi_receive_byte();
+	sd_spi_receive_byte();
 
 	sd_spi_unselect_card();
 	return number_of_blocks;
@@ -891,55 +862,55 @@ sd_spi_read_cid_register(
 	sd_spi_cid_t *cid
 )
 {
-	if (sd_spi_send_command(SD_CMD_SEND_CID, 0))
+	if (sd_spi_send_byte_command(SD_CMD_SEND_CID, 0))
 	{
 		sd_spi_unselect_card();
 		return SD_ERR_READ_REGISTER;
 	}
 
-	uint16_t timeout_start = millis();
+	uint16_t timeout_start = sd_spi_millis();
 
-	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive_byte() != SD_TOKEN_START_BLOCK)
 	{
-		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
+		if (((uint16_t) sd_spi_millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
 			return sd_spi_card_status();
 	    }
 	}
 
     /* See SD Specifications for more information. */
-	cid->mid = sd_spi_receive();
+	cid->mid = sd_spi_receive_byte();
 
 	uint8_t i;
 	for (i = 0; i < 2; i++)
 	{
-		cid->oid[i] = sd_spi_receive();
+		cid->oid[i] = sd_spi_receive_byte();
 	}
 
 	for (i = 0; i < 5; i++)
 	{
-		cid->pnm[i] = sd_spi_receive();
+		cid->pnm[i] = sd_spi_receive_byte();
 	}
 
-	i = sd_spi_receive();
+	i = sd_spi_receive_byte();
 	cid->prv_n = i >> 4;
 	cid->prv_m = i;
 
-	cid->psn_high = sd_spi_receive();
-	cid->psn_mid_high = sd_spi_receive();
-	cid->psn_mid_low = sd_spi_receive();
-	cid->psn_low = sd_spi_receive();
+	cid->psn_high = sd_spi_receive_byte();
+	cid->psn_mid_high = sd_spi_receive_byte();
+	cid->psn_mid_low = sd_spi_receive_byte();
+	cid->psn_low = sd_spi_receive_byte();
 
-	i = sd_spi_receive();
+	i = sd_spi_receive_byte();
 	cid->mdt_year = (i << 4) & 0xF0;
-	i = sd_spi_receive();
+	i = sd_spi_receive_byte();
 	cid->mdt_year |= i >> 4;
 	cid->mdt_month = i;
-	cid->crc = sd_spi_receive() >> 1;
+	cid->crc = sd_spi_receive_byte() >> 1;
 
 	/* Discard CRC */
-	sd_spi_receive();
-	sd_spi_receive();
+	sd_spi_receive_byte();
+	sd_spi_receive_byte();
 
 	sd_spi_unselect_card();
 	return SD_ERR_OK;
@@ -950,38 +921,38 @@ sd_spi_read_csd_register(
 	sd_spi_csd_t *csd
 )
 {
-	if (sd_spi_send_command(SD_CMD_SEND_CSD, 0))
+	if (sd_spi_send_byte_command(SD_CMD_SEND_CSD, 0))
 	{
 		sd_spi_unselect_card();
 		return SD_ERR_READ_REGISTER;
 	}
 
-	uint16_t timeout_start = millis();
+	uint16_t timeout_start = sd_spi_millis();
 
-	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive_byte() != SD_TOKEN_START_BLOCK)
 	{
-		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
+		if (((uint16_t) sd_spi_millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
 			return sd_spi_card_status();
 	    }
 	}
 
     /* See SD Specification for more information. */
-    uint8_t b = sd_spi_receive();
+    uint8_t b = sd_spi_receive_byte();
 	csd->csd_structure = b >> 6;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->taac = b;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->nsac = b;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->tran_speed = b;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->ccc_high = b >> 4;
 	csd->ccc_low |= b << 4;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->ccc_low |= b >> 4;
 	csd->max_read_bl_len = b;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->read_bl_partial = b >> 7;
 	csd->write_bl_misalign = b >> 6;
 	csd->read_bl_misalign = b >> 5;
@@ -990,55 +961,55 @@ sd_spi_read_csd_register(
 	if (csd->csd_structure == 0)
 	{
 		csd->cvsi.v1.c_size_high = (b << 2) & 0x0C;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		csd->cvsi.v1.c_size_high |= b >> 6;
 		csd->cvsi.v1.c_size_low = b << 2;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		csd->cvsi.v1.c_size_low |= b >> 6;
 		csd->cvsi.v1.vdd_r_curr_min = b >> 3;
 		csd->cvsi.v1.vdd_r_curr_max = b;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		csd->cvsi.v1.vdd_w_curr_min = b >> 5;
 		csd->cvsi.v1.vdd_w_curr_max = b >> 2;
 		csd->cvsi.v1.c_size_mult = (b << 1) & 0x06;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		csd->cvsi.v1.c_size_mult |= b >> 7;
 	}
 	else
 	{
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		csd->cvsi.v2.c_size_high = b;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		csd->cvsi.v2.c_size_mid = b;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 		csd->cvsi.v2.c_size_low = b;
-		b = sd_spi_receive();
+		b = sd_spi_receive_byte();
 	}
 
 	csd->erase_bl_en = b >> 6;
 	csd->erase_sector_size = (b << 1) & 0x7E;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->erase_sector_size |= b >> 7;
 	csd->wp_grp_size = b << 1;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->wp_grp_enable = b >> 7;
 	csd->r2w_factor = b >> 2;
 	csd->write_bl_len = (b << 2) & 0x0C;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->write_bl_len |= b >> 6;
 	csd->write_bl_partial = b >> 5;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->file_format_grp = b >> 7;
 	csd->copy = b >> 6;
 	csd->perm_write_protect = b >> 5;
 	csd->tmp_write_protect = b >> 4;
 	csd->file_format = b >> 2;
-	b = sd_spi_receive();
+	b = sd_spi_receive_byte();
 	csd->crc = b >> 1;
 
 	/* Discard CRC. */
-	sd_spi_receive();
-	sd_spi_receive();
+	sd_spi_receive_byte();
+	sd_spi_receive_byte();
 
 	sd_spi_unselect_card();
 	return SD_ERR_OK;
@@ -1049,11 +1020,19 @@ sd_spi_card_status(
 	void
 )
 {
-	int8_t response = sd_spi_r2_error((sd_spi_send_command(SD_CMD_SEND_STATUS, 0)
-									  << 8) | sd_spi_receive());
+	int8_t response = sd_spi_r2_error((sd_spi_send_byte_command(SD_CMD_SEND_STATUS, 0)
+									  << 8) | sd_spi_receive_byte());
 
 	sd_spi_unselect_card();
 	return response;
+}
+
+uint8_t
+sd_spi_card_type(
+	void
+)
+{
+	return card.card_type;
 }
 
 uint32_t
@@ -1100,7 +1079,7 @@ sd_spi_write_out_data(
 	  	}
 
 		/* Send token for multiple block write. */
-	  	sd_spi_send(SD_TOKEN_MULTIPLE_WRITE_START_BLOCK);
+	  	sd_spi_send_byte(SD_TOKEN_MULTIPLE_WRITE_START_BLOCK);
 	}
 	else
 	{
@@ -1112,14 +1091,14 @@ sd_spi_write_out_data(
 		}
 
 		/* Send the command to start writing a single block. */
-		if (sd_spi_send_command(SD_CMD_SET_WRITE_BLOCK, block_address))
+		if (sd_spi_send_byte_command(SD_CMD_SET_WRITE_BLOCK, block_address))
 		{
 			sd_spi_unselect_card();
 			return SD_ERR_WRITE_FAILURE;
 		}
 
 		/* Send token for single block write. */
-		sd_spi_send(SD_TOKEN_START_BLOCK);
+		sd_spi_send_byte(SD_TOKEN_START_BLOCK);
 	}
 
 	uint16_t i;
@@ -1127,27 +1106,27 @@ sd_spi_write_out_data(
 	/* Pad data with 0. */
 	for (i = 0; i < byte_offset; i++)
 	{
-		sd_spi_send(0);
+		sd_spi_send_byte(0);
 	}
 
 	/* Write block. */
 	for (i = byte_offset; i < byte_offset + number_of_bytes; i++)
 	{
-		sd_spi_send(((uint8_t *) data)[i - byte_offset]);
+		sd_spi_send_byte(((uint8_t *) data)[i - byte_offset]);
 	}
 
 	/* Pad data with 0. */
 	for (i = byte_offset + number_of_bytes; i < 512; i++)
 	{
-		sd_spi_send(0);
+		sd_spi_send_byte(0);
 	}	
 
 	/* Send dummy CRC. */
-	sd_spi_send(0xFF);
-	sd_spi_send(0xFF);
+	sd_spi_send_byte(0xFF);
+	sd_spi_send_byte(0xFF);
 
 	/* Check if write was successful. */
-	switch (sd_spi_receive() & 0x0F)
+	switch (sd_spi_receive_byte() & 0x0F)
 	{
 		case SD_TOKEN_DATA_REJECTED_CRC:
 			return SD_ERR_WRITE_DATA_CRC_REJECTED;
@@ -1201,19 +1180,19 @@ sd_spi_read_in_data(
 		}
 
 		/* Start single block reading. */
-	    if (sd_spi_send_command(SD_CMD_READ_SINGLE_BLOCK, block_address))
+	    if (sd_spi_send_byte_command(SD_CMD_READ_SINGLE_BLOCK, block_address))
 	    {
 	    	sd_spi_unselect_card();
 	    	return SD_ERR_READ_FAILURE;
 	    }
 	}
 
-	uint16_t timeout_start = millis();
+	uint16_t timeout_start = sd_spi_millis();
 
     /* Must wait for read token from card before reading. */
-	while (sd_spi_receive() != SD_TOKEN_START_BLOCK)
+	while (sd_spi_receive_byte() != SD_TOKEN_START_BLOCK)
 	{
-		if (((uint16_t) millis() - timeout_start) > SD_READ_TIMEOUT)
+		if (((uint16_t) sd_spi_millis() - timeout_start) > SD_READ_TIMEOUT)
 		{
 	    	return sd_spi_card_status();
 	    }
@@ -1225,12 +1204,12 @@ sd_spi_read_in_data(
 	/* Read in the bytes to the buffer. */
 	for (i = 0; i < 512; i++)
 	{
-		card.sd_spi_buffer[i] = sd_spi_receive();
+		card.sd_spi_buffer[i] = sd_spi_receive_byte();
 	}
 
 	/* Throw out CRC. */
-	sd_spi_receive();
-	sd_spi_receive();
+	sd_spi_receive_byte();
+	sd_spi_receive_byte();
 
 	if (card.is_read_write_continuous)
 	{
@@ -1252,19 +1231,19 @@ sd_spi_read_in_data(
     /* Throw out the bytes until the offset is reached. */
 	for (i = 0; i < byte_offset; i++)
 	{
-		sd_spi_receive();
+		sd_spi_receive_byte();
 	}
 
 	/* Read in the bytes to the buffer. */
 	for (i = 0; i < number_of_bytes; i++)
 	{
-		((uint8_t *) data_buffer)[i] = sd_spi_receive();
+		((uint8_t *) data_buffer)[i] = sd_spi_receive_byte();
 	}
 
 	/* Throw out any remaining bytes in the page plus CRC. */
     for (i = 0; number_of_bytes + byte_offset + i < 514; i++)
     {
-    	sd_spi_receive();
+    	sd_spi_receive_byte();
     }
 #endif
 
@@ -1272,36 +1251,36 @@ sd_spi_read_in_data(
 }
 
 static uint8_t
-sd_spi_send_command(
+sd_spi_send_byte_command(
 	uint8_t 	command,
 	uint32_t 	argument
 )
 {
 	sd_spi_select_card();
-	sd_spi_receive();
+	sd_spi_receive_byte();
 
 	/* Send command with transmission bit. */
-	sd_spi_send(0x40 | command);
+	sd_spi_send_byte(0x40 | command);
 
 	/* Send argument. */
-	sd_spi_send(argument >> 24);
-	sd_spi_send(argument >> 16);
-	sd_spi_send(argument >> 8);
-	sd_spi_send(argument >> 0);
+	sd_spi_send_byte(argument >> 24);
+	sd_spi_send_byte(argument >> 16);
+	sd_spi_send_byte(argument >> 8);
+	sd_spi_send_byte(argument >> 0);
 
 	/* Send CRC. */
 	switch(command)
 	{
 		/* CRC for CMD0 with arg 0. */
 		case SD_CMD_GO_IDLE_STATE: 
-			sd_spi_send(0x95);
+			sd_spi_send_byte(0x95);
 			break; 
 		/* CRC for CMD8 with arg 0X1AA. */
 		case SD_CMD_SEND_IF_COND:
-			sd_spi_send(0x87);
+			sd_spi_send_byte(0x87);
 			break; 
 		default:
-			sd_spi_send(0xFF);
+			sd_spi_send_byte(0xFF);
 			break;
 	}
 
@@ -1310,7 +1289,7 @@ sd_spi_send_command(
 	uint8_t response;
 	for (i = 0; i < 8; i++)
 	{
-		response = sd_spi_receive();
+		response = sd_spi_receive_byte();
 
 		if (response != 0xFF)
 		{
@@ -1322,25 +1301,25 @@ sd_spi_send_command(
 }
 
 static uint8_t
-sd_spi_send_app_command(
+spi_send_byte_app_command(
 	uint8_t 	command,
 	uint32_t 	argument
 )
 {
-	sd_spi_send_command(SD_CMD_APP, 0);
-	return sd_spi_send_command(command, argument);
+	sd_spi_send_byte_command(SD_CMD_APP, 0);
+	return sd_spi_send_byte_command(command, argument);
 }
 
 static int8_t
 sd_spi_wait_if_busy(
-	uint16_t max_time_to_wait
+	uint32_t max_time_to_wait
 )
 {
-	uint16_t timeout_start = millis();
+	uint32_t timeout_start = sd_spi_millis();
 
-	while (sd_spi_receive() != 0xFF)
+	while (sd_spi_receive_byte() != 0xFF)
 	{
-		if (((uint16_t) millis() - timeout_start) > max_time_to_wait)
+		if (((uint32_t) sd_spi_millis() - timeout_start) > max_time_to_wait)
 		{
 	    	return 1;
 	    }
@@ -1447,8 +1426,7 @@ sd_spi_select_card(
 	void
 )
 {
-#if defined(USE_HARDWARE_SPI)
-	// TODO: Set CS pin low
+	sd_spi_digital_write(card.chip_select_pin, LOW);
 
 	if (card.is_chip_select_high)
 	{
@@ -1456,30 +1434,14 @@ sd_spi_select_card(
 
     	if (card.spi_speed == 0)
     	{
-    		// TODO: Begin SPI transaction at the slowest speed
+    		sd_spi_begin_transaction(250000);
+    		
     	}
     	else
     	{
-    		// TODO: Begin SPI transaction at the fastest speed
-    	}
-    }
-#else
-	digitalWrite(card.chip_select_pin, LOW);
-
-	if (card.is_chip_select_high)
-	{
-    	card.is_chip_select_high = 0;
-
-    	if (card.spi_speed == 0)
-    	{
-    		SPI.beginTransaction(SPISettings(250000, MSBFIRST, SPI_MODE0));
-    	}
-    	else
-    	{
-    		SPI.beginTransaction(SPISettings(25000000, MSBFIRST, SPI_MODE0));
+    		sd_spi_begin_transaction(25000000);
     	}
 	}
-#endif
 }
 
 static void
@@ -1487,49 +1449,14 @@ sd_spi_unselect_card(
 	void
 )
 {
-	sd_spi_receive();
+	sd_spi_receive_byte();
 
-#if defined(USE_HARDWARE_SPI)
-	// TODO: Set CS pin high
-
-	if (!card.is_chip_select_high)
-	{
-    	card.is_chip_select_high = 1;
-
-    	// TODO: End SPI transaction
-    }
-#else
 	/* Host has to wait 8 clock cycles after a command. */
-	digitalWrite(card.chip_select_pin, HIGH);
+	sd_spi_digital_write(card.chip_select_pin, HIGH);
 
 	if (!card.is_chip_select_high)
 	{
     	card.is_chip_select_high = 1;
-    	SPI.endTransaction();
+    	sd_spi_end_transaction();
 	}
-#endif
-}
-
-static void
-sd_spi_send(
-	uint8_t b
-)
-{
-#if defined(USE_HARDWARE_SPI)
-	// TODO: Send a byte over SPI
-#else
-	SPI.transfer(b);
-#endif
-}
-
-static uint8_t
-sd_spi_receive(
-	void
-)
-{
-#if defined(USE_HARDWARE_SPI)
-	// TODO: Send dummy byte to receive a byte from SPI
-#else
-	return SPI.transfer(0xFF);
-#endif
 }

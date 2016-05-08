@@ -1,4 +1,4 @@
-# SD SPI Communication Library
+# SD SPI Communications Library
 SD cards have support to communicate with devices that have a Serial Peripheral Interface (SPI) bus. This allows microcontrollers to read from and write to SD cards. The cards use specific commands to communicate with the host. The purpose of this library is to abstract this communication layer from the user.
 
 This library supports reading and writing blocks to and from the card, erasing blocks, and getting information about the card (from the information in the registers). It also provides methods for sequentially reading from and writing to the card; the card has an explicit command that uses some type of magic to speed up these sequential operations.

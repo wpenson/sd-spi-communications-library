@@ -10,7 +10,3 @@ set(SOURCE_FILES
     ../sd_spi_info.h)
 
 add_library(${PROJECT_NAME} STATIC ${SOURCE_FILES})
-
-# Expose sd_spi_device's public includes to other subprojects through cache variable.
-set(${PROJECT_NAME}_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/include
-        CACHE INTERNAL "${PROJECT_NAME}: Include Directories" FORCE)
